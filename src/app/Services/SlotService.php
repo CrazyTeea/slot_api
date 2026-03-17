@@ -46,7 +46,7 @@ class SlotService
             if ($hold) {
                 return $hold;
             }
-            // Блокировка слота для предотвращения race condition
+            // Получаем слот с блокировкой - (доп защита от овербукинга/оверсела из-за гонки)
             $slot = Slot::whereId($slotId)->lockForUpdate()->first();
 
             // Проверка наличия мест (защита от оверсела)
@@ -81,7 +81,7 @@ class SlotService
                     'error' => 'hold not found or is not held'
                 ], 409));
             }
-            // Получаем слот с блокировкой - (доп защита от овербукинга из-за гонки)
+            // Получаем слот с блокировкой - (доп защита от овербукинга/оверсела из-за гонки)
             $slot = Slot::whereId($hold->slot_id)->lockForUpdate()->first();
 
             $this->checkOverbookingOrOversell($slot);
