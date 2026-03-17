@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\OverbookingException;
 use App\Models\Hold;
 use App\Models\Slot;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -40,25 +41,28 @@ class SlotService
     public function createHold(int $slotId, string $idempotenceKey)
     {
         return DB::transaction(function () use ($slotId, $idempotenceKey) {
+            // Проверяем существующий холд (идемпотентность)
             $hold = Hold::whereIdempotencyKey($idempotenceKey)->first();
             if ($hold) {
                 return $hold;
             }
-
+            // Блокировка слота для предотвращения race condition
             $slot = Slot::whereId($slotId)->lockForUpdate()->first();
 
-            if (!$slot or $slot->remaining == 0) {
-                throw new HttpResponseException(response()->json([
-                    'error' => 'slot not found or is full',
-                ], 409));
-            }
+            // Проверка наличия мест (защита от оверсела)
+            $this->checkOverbookingOrOversell($slot);
 
-            return Hold::create([
+            // Создаем холд и уменьшаем оставшиеся места
+            $hold = Hold::create([
                 'slot_id' => $slotId,
                 'idempotency_key' => $idempotenceKey,
                 'status' => Hold::STATUS_HELD,
                 'expires_at' => now()->addMinutes(5),
             ]);
+            // Атомарное уменьшение оставшихся мест
+            $slot->decrement('remaining');
+
+            return $hold;
         });
     }
 
@@ -68,22 +72,20 @@ class SlotService
     public function confirmHold(int $holdId)
     {
         return DB::transaction(function () use ($holdId) {
+            // Получаем холд с блокировкой
             $hold = Hold::whereId($holdId)->lockForUpdate()->first();
 
             if (!$hold or $hold->status !== Hold::STATUS_HELD) {
                 throw new HttpResponseException(response()->json([
+                    //здесь реализуется
                     'error' => 'hold not found or is not held'
                 ], 409));
             }
-
+            // Получаем слот с блокировкой - (доп защита от овербукинга из-за гонки)
             $slot = Slot::whereId($hold->slot_id)->lockForUpdate()->first();
 
-            if (!$slot or $slot->remaining == 0) {
-                throw new HttpResponseException(response()->json([
-                    'error' => 'slot not found or is full',
-                ], 409));
-            }
-
+            $this->checkOverbookingOrOversell($slot);
+            // Обновляем слот и холд
             $slot->decrement('remaining');
             $hold->update(['status' => Hold::STATUS_CONFIRMED]);
 
@@ -105,7 +107,7 @@ class SlotService
             }
 
             $slot = Slot::whereId($hold->slot_id)->lockForUpdate()->first();
-            $slot->update(['remaining', $slot->remaining + 1]);
+            $slot->increment('remaining');
             $hold->update(['status' => Hold::STATUS_CANCELLED]);
             $this->invalidateCache();
             return $hold;
@@ -115,5 +117,15 @@ class SlotService
     public function invalidateCache(): void
     {
         Cache::forget($this->cacheKeyPrefix);
+    }
+
+    /**
+     * @throws OverbookingException
+     */
+    public function checkOverbookingOrOversell(Slot $slot): void
+    {
+        if ($slot->isFull()){
+            throw new OverbookingException();
+        }
     }
 }

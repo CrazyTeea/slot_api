@@ -34,4 +34,11 @@ class Slot extends Model
     {
         return $this->hasMany(Hold::class);
     }
+
+    public function isFull(): bool
+    {
+        //не вижу смысла проверять по капасити, логично предположить что кол-во возможных холдов при создание слота <= капасити
+        //из чего следует что при проверке полности слота нет смысла дописывать this->remaining <= $this->capacity
+        return ($this->remaining <= 0);
+    }
 }
